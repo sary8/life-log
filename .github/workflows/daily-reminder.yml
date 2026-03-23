@@ -1,0 +1,169 @@
+name: Daily Diary Reminder
+
+on:
+  schedule:
+    # 21:00 JST = 12:00 UTC
+    - cron: "0 12 * * *"
+  workflow_dispatch: # 手動実行も可能
+
+jobs:
+  check-diary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check diary and calculate streak
+        id: check
+        run: |
+          # JST (UTC+9) での日付を取得
+          TODAY=$(TZ=Asia/Tokyo date +%Y/%m/%d)
+          TODAY_DISPLAY=$(TZ=Asia/Tokyo date +%Y-%m-%d)
+          DIARY_PATH="daily/${TODAY}.md"
+          echo "diary_path=${DIARY_PATH}" >> "$GITHUB_OUTPUT"
+          echo "today_display=${TODAY_DISPLAY}" >> "$GITHUB_OUTPUT"
+
+          if [ -f "$DIARY_PATH" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Today's diary found: ${DIARY_PATH}"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "📝 No diary found for today: ${DIARY_PATH}"
+          fi
+
+          # ストリーク（連続記録日数）を計算
+          STREAK=0
+          CHECK_DATE=$(TZ=Asia/Tokyo date -d "yesterday" +%Y/%m/%d 2>/dev/null || TZ=Asia/Tokyo date -v-1d +%Y/%m/%d)
+          while [ -f "daily/${CHECK_DATE}.md" ]; do
+            STREAK=$((STREAK + 1))
+            CHECK_DATE=$(TZ=Asia/Tokyo date -d "${CHECK_DATE} -1 day" +%Y/%m/%d 2>/dev/null || break)
+          done
+          echo "streak=${STREAK}" >> "$GITHUB_OUTPUT"
+
+          # 総記録日数を計算
+          TOTAL=$(find daily -name "*.md" 2>/dev/null | wc -l)
+          echo "total=${TOTAL}" >> "$GITHUB_OUTPUT"
+
+      - name: Send LINE Flex Message
+        if: steps.check.outputs.exists == 'false'
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          STREAK: ${{ steps.check.outputs.streak }}
+          TOTAL: ${{ steps.check.outputs.total }}
+          TODAY_DISPLAY: ${{ steps.check.outputs.today_display }}
+        run: |
+          # ストリークに応じた煽りメッセージ
+          if [ "$STREAK" -ge 7 ]; then
+            STREAK_MSG="${STREAK}日連続だったのに？マジで？"
+            STREAK_COLOR="#FF0000"
+            MAIN_MSG="は？${STREAK}日も続けてきたのに今日サボるの？"
+            SUB_MSG="お前の努力、今日で全部パーだけど"
+          elif [ "$STREAK" -ge 3 ]; then
+            STREAK_MSG="${STREAK}日連続だったのにね"
+            STREAK_COLOR="#FF6B6B"
+            MAIN_MSG="${STREAK}日坊主おめでとう 👏"
+            SUB_MSG="三日坊主以下は何て言うか知ってる？"
+          elif [ "$STREAK" -ge 1 ]; then
+            STREAK_MSG="たった${STREAK}日で途切れそう"
+            STREAK_COLOR="#FF8C00"
+            MAIN_MSG="まだ${STREAK}日しか続いてないのにもうサボり？"
+            SUB_MSG="やる気ないなら最初からやるなよ"
+          else
+            STREAK_MSG="連続記録: 0日 💀"
+            STREAK_COLOR="#666666"
+            MAIN_MSG="また書いてないの？"
+            SUB_MSG="GitHubで人生管理するとか言ってなかった？"
+          fi
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg to "$LINE_USER_ID" \
+            --arg today "$TODAY_DISPLAY" \
+            --arg main_msg "$MAIN_MSG" \
+            --arg sub_msg "$SUB_MSG" \
+            --arg streak_msg "$STREAK_MSG" \
+            --arg streak_color "$STREAK_COLOR" \
+            --arg total_msg "これまで${TOTAL}日分の記録" \
+            '{
+              "to": $to,
+              "messages": [
+                {
+                  "type": "flex",
+                  "altText": "おい、今日の日記まだ書いてないぞ",
+                  "contents": {
+                    "type": "bubble",
+                    "size": "kilo",
+                    "header": {
+                      "type": "box",
+                      "layout": "vertical",
+                      "contents": [
+                        {
+                          "type": "text",
+                          "text": "⚠️ おい、日記書けよ",
+                          "weight": "bold",
+                          "size": "lg",
+                          "color": "#FFFFFF"
+                        }
+                      ],
+                      "backgroundColor": "#C0392B",
+                      "paddingAll": "15px"
+                    },
+                    "body": {
+                      "type": "box",
+                      "layout": "vertical",
+                      "contents": [
+                        {"type": "text", "text": $today, "size": "sm", "color": "#999999"},
+                        {"type": "text", "text": $main_msg, "weight": "bold", "size": "md", "margin": "md", "wrap": true},
+                        {"type": "text", "text": $sub_msg, "size": "sm", "color": "#666666", "margin": "sm", "wrap": true},
+                        {"type": "separator", "margin": "lg"},
+                        {
+                          "type": "box",
+                          "layout": "horizontal",
+                          "contents": [
+                            {
+                              "type": "box",
+                              "layout": "vertical",
+                              "contents": [
+                                {"type": "text", "text": "🔥 Streak", "size": "xs", "color": "#999999"},
+                                {"type": "text", "text": $streak_msg, "size": "sm", "weight": "bold", "color": $streak_color, "wrap": true}
+                              ]
+                            }
+                          ],
+                          "margin": "lg"
+                        },
+                        {
+                          "type": "box",
+                          "layout": "horizontal",
+                          "contents": [
+                            {
+                              "type": "box",
+                              "layout": "vertical",
+                              "contents": [
+                                {"type": "text", "text": "📊 Total", "size": "xs", "color": "#999999"},
+                                {"type": "text", "text": $total_msg, "size": "sm", "weight": "bold"}
+                              ]
+                            }
+                          ],
+                          "margin": "md"
+                        }
+                      ],
+                      "paddingAll": "15px"
+                    },
+                    "footer": {
+                      "type": "box",
+                      "layout": "vertical",
+                      "contents": [
+                        {"type": "text", "text": "早くPCを開け", "size": "xs", "color": "#FF0000", "align": "center", "weight": "bold"}
+                      ],
+                      "paddingAll": "10px"
+                    }
+                  }
+                }
+              ]
+            }')
+
+          curl -s -X POST "https://api.line.me/v2/bot/message/push" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${LINE_CHANNEL_ACCESS_TOKEN}" \
+            -d "$JSON_PAYLOAD"

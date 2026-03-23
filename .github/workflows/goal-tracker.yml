@@ -1,0 +1,179 @@
+name: Goal Tracker
+
+on:
+  push:
+    paths:
+      - "daily/**/*.md"
+    branches:
+      - main
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check-goals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check goals against diary entries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          # goal ラベル付きのopen issueを取得
+          ISSUES=$(gh issue list --label "goal" --state open --json number,title,body)
+
+          if [ "$(echo "$ISSUES" | jq 'length')" -eq 0 ]; then
+            echo "📋 目標Issueなし。スキップ。"
+            exit 0
+          fi
+
+          echo "$ISSUES" | jq -c '.[]' | while IFS= read -r ISSUE_JSON; do
+            NUMBER=$(echo "$ISSUE_JSON" | jq -r '.number')
+            TITLE=$(echo "$ISSUE_JSON" | jq -r '.title')
+            BODY=$(echo "$ISSUE_JSON" | jq -r '.body')
+
+            # Issue bodyからメタデータを抽出
+            KEYWORD=$(echo "$BODY" | grep -i '^keyword:' | sed 's/^keyword:\s*//' | tr -d '\r')
+            TARGET=$(echo "$BODY" | grep -i '^target:' | sed 's/^target:\s*//' | tr -d '\r')
+            PERIOD=$(echo "$BODY" | grep -i '^period:' | sed 's/^period:\s*//' | tr -d '\r')
+
+            if [ -z "$KEYWORD" ] || [ -z "$TARGET" ]; then
+              echo "⚠️  Issue #${NUMBER} にkeywordまたはtargetが未設定。スキップ。"
+              continue
+            fi
+
+            # periodの解決
+            if [ "$PERIOD" = "monthly" ] || [ -z "$PERIOD" ]; then
+              SEARCH_DIR="daily/$(TZ=Asia/Tokyo date +%Y/%m)"
+            else
+              SEARCH_DIR="daily/$(echo $PERIOD | tr '-' '/')"
+            fi
+
+            if [ ! -d "$SEARCH_DIR" ]; then
+              echo "📁 ${SEARCH_DIR} が存在しません。スキップ。"
+              continue
+            fi
+
+            # キーワードの出現回数をカウント（日記の箇条書き行のみ対象）
+            COUNT=$(grep -rl "$KEYWORD" "$SEARCH_DIR" 2>/dev/null | while read f; do
+              grep -c "^- .*${KEYWORD}" "$f" 2>/dev/null || echo 0
+            done | paste -sd+ | bc 2>/dev/null || echo 0)
+
+            echo "🎯 Issue #${NUMBER}: '${TITLE}' - ${KEYWORD}: ${COUNT}/${TARGET}"
+
+            # 目標達成チェック
+            if [ "$COUNT" -ge "$TARGET" ]; then
+              echo "🎉 目標達成！ Issue #${NUMBER} をクローズ"
+
+              COMMENT="🎉 目標達成！ ${TITLE} | ${KEYWORD}: ${COUNT}/${TARGET} | やるじゃねーか。次の目標も立てろよ。"
+              gh issue close "$NUMBER" --comment "$COMMENT"
+
+              # LINE通知
+              if [ -n "$LINE_CHANNEL_ACCESS_TOKEN" ] && [ -n "$LINE_USER_ID" ]; then
+                JSON_PAYLOAD=$(jq -n \
+                  --arg to "$LINE_USER_ID" \
+                  --arg alt_text "🎯 目標達成: ${TITLE}" \
+                  --arg title "$TITLE" \
+                  --arg target_text "${TARGET}回" \
+                  --arg count_text "${COUNT}回" \
+                  '{
+                    "to": $to,
+                    "messages": [
+                      {
+                        "type": "flex",
+                        "altText": $alt_text,
+                        "contents": {
+                          "type": "bubble",
+                          "size": "kilo",
+                          "header": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                              {
+                                "type": "text",
+                                "text": "🎯 目標達成",
+                                "weight": "bold",
+                                "size": "lg",
+                                "color": "#FFFFFF"
+                              }
+                            ],
+                            "backgroundColor": "#27ae60",
+                            "paddingAll": "15px"
+                          },
+                          "body": {
+                            "type": "box",
+                            "layout": "vertical",
+                            "contents": [
+                              {
+                                "type": "text",
+                                "text": $title,
+                                "weight": "bold",
+                                "size": "md",
+                                "wrap": true
+                              },
+                              {
+                                "type": "separator",
+                                "margin": "md"
+                              },
+                              {
+                                "type": "box",
+                                "layout": "horizontal",
+                                "contents": [
+                                  {
+                                    "type": "box",
+                                    "layout": "vertical",
+                                    "contents": [
+                                      {"type": "text", "text": "目標", "size": "xs", "color": "#999999", "align": "center"},
+                                      {"type": "text", "text": $target_text, "size": "lg", "weight": "bold", "align": "center"}
+                                    ],
+                                    "flex": 1
+                                  },
+                                  {
+                                    "type": "separator"
+                                  },
+                                  {
+                                    "type": "box",
+                                    "layout": "vertical",
+                                    "contents": [
+                                      {"type": "text", "text": "実績", "size": "xs", "color": "#999999", "align": "center"},
+                                      {"type": "text", "text": $count_text, "size": "lg", "weight": "bold", "align": "center", "color": "#27ae60"}
+                                    ],
+                                    "flex": 1
+                                  }
+                                ],
+                                "margin": "lg"
+                              },
+                              {
+                                "type": "separator",
+                                "margin": "lg"
+                              },
+                              {
+                                "type": "text",
+                                "text": "やるじゃねーか。でも当たり前のことしただけだからな。次の目標も立てろよ。",
+                                "size": "sm",
+                                "color": "#27ae60",
+                                "weight": "bold",
+                                "margin": "lg",
+                                "wrap": true
+                              }
+                            ],
+                            "paddingAll": "15px"
+                          }
+                        }
+                      }
+                    ]
+                  }')
+
+                curl -s -X POST "https://api.line.me/v2/bot/message/push" \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${LINE_CHANNEL_ACCESS_TOKEN}" \
+                  -d "$JSON_PAYLOAD"
+              fi
+            fi
+          done

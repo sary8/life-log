@@ -1,0 +1,246 @@
+name: Weekly Review
+
+on:
+  schedule:
+    # 毎週月曜 8:00 JST = 日曜 23:00 UTC
+    - cron: "0 23 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate weekly review
+        id: review
+        run: |
+          # 先週の月曜〜日曜
+          WEEK_END=$(TZ=Asia/Tokyo date -d "yesterday" +%Y-%m-%d)
+          WEEK_START=$(TZ=Asia/Tokyo date -d "last monday" +%Y-%m-%d)
+          WEEK_NUM=$(TZ=Asia/Tokyo date -d "$WEEK_START" +%V)
+          YEAR=$(TZ=Asia/Tokyo date -d "$WEEK_START" +%Y)
+          REVIEW_FILE="weekly/${YEAR}-W${WEEK_NUM}.md"
+
+          echo "week_start=${WEEK_START}" >> "$GITHUB_OUTPUT"
+          echo "week_end=${WEEK_END}" >> "$GITHUB_OUTPUT"
+          echo "review_file=${REVIEW_FILE}" >> "$GITHUB_OUTPUT"
+          echo "year=${YEAR}" >> "$GITHUB_OUTPUT"
+          echo "week_num=${WEEK_NUM}" >> "$GITHUB_OUTPUT"
+
+          mkdir -p weekly
+
+          # 日記ファイルを収集
+          DIARY_COUNT=0
+          ALL_CATEGORIES=""
+          ALL_TAGS=""
+          TOTAL_ITEMS=0
+
+          for i in $(seq 0 6); do
+            DAY=$(date -d "${WEEK_START} +${i} days" +%Y/%m/%d)
+            DAY_DISPLAY=$(date -d "${WEEK_START} +${i} days" +%Y-%m-%d)
+            WEEKDAY=$(date -d "${WEEK_START} +${i} days" +%a)
+            FILE="daily/${DAY}.md"
+
+            if [ -f "$FILE" ]; then
+              DIARY_COUNT=$((DIARY_COUNT + 1))
+
+              # カテゴリ抽出
+              CATS=$(grep -E '^## ' "$FILE" | grep -v '振り返り' | sed 's/^## //' || true)
+              ALL_CATEGORIES="${ALL_CATEGORIES}${CATS}\n"
+
+              # タグ抽出
+              TAGS=$(grep '^tags:' "$FILE" | grep -oE '#[^ ]+' || true)
+              ALL_TAGS="${ALL_TAGS}${TAGS}\n"
+
+              # アイテム数
+              ITEMS=$(grep -c '^- ' "$FILE" || true)
+              TOTAL_ITEMS=$((TOTAL_ITEMS + ITEMS))
+            fi
+          done
+
+          # カテゴリ集計
+          TOP_CATEGORIES=$(echo -e "$ALL_CATEGORIES" | grep -v '^$' | sort | uniq -c | sort -rn | head -5)
+
+          # タグ集計
+          TOP_TAGS=$(echo -e "$ALL_TAGS" | grep -v '^$' | sort | uniq -c | sort -rn | head -10)
+
+          # 記録率
+          RATE=$((DIARY_COUNT * 100 / 7))
+
+          # マークダウン生成
+          cat > "$REVIEW_FILE" << MDEOF
+          # Weekly Review: ${YEAR}-W${WEEK_NUM}
+
+          > ${WEEK_START} 〜 ${WEEK_END}
+
+          ## 📊 サマリー
+
+          - 記録日数: ${DIARY_COUNT}/7日（${RATE}%）
+          - 記録アイテム数: ${TOTAL_ITEMS}件
+
+          ## 📁 カテゴリ TOP5
+
+          $(echo "$TOP_CATEGORIES" | while read count cat; do
+            echo "- ${cat}: ${count}回"
+          done)
+
+          ## 🏷️ タグ TOP10
+
+          $(echo "$TOP_TAGS" | while read count tag; do
+            echo "- ${tag}: ${count}回"
+          done)
+
+          ## 📅 日別記録
+
+          $(for i in $(seq 0 6); do
+            DAY=$(date -d "${WEEK_START} +${i} days" +%Y/%m/%d)
+            DAY_DISPLAY=$(date -d "${WEEK_START} +${i} days" +%Y-%m-%d)
+            WEEKDAY_JP=$(date -d "${WEEK_START} +${i} days" +%u)
+            case $WEEKDAY_JP in
+              1) W="月";; 2) W="火";; 3) W="水";; 4) W="木";; 5) W="金";; 6) W="土";; 7) W="日";;
+            esac
+            FILE="daily/${DAY}.md"
+            if [ -f "$FILE" ]; then
+              ITEMS=$(grep -c '^- ' "$FILE" || true)
+              echo "- ${DAY_DISPLAY}（${W}）✅ ${ITEMS}件"
+            else
+              echo "- ${DAY_DISPLAY}（${W}）❌ 未記録"
+            fi
+          done)
+          MDEOF
+
+          # インデントを除去
+          sed -i 's/^          //' "$REVIEW_FILE"
+
+          echo "diary_count=${DIARY_COUNT}" >> "$GITHUB_OUTPUT"
+          echo "rate=${RATE}" >> "$GITHUB_OUTPUT"
+          echo "total_items=${TOTAL_ITEMS}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit weekly review
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add weekly/
+          git commit -m "Add weekly review: ${{ steps.review.outputs.year }}-W${{ steps.review.outputs.week_num }}" || exit 0
+          git push
+
+      - name: Send LINE notification
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          DIARY_COUNT: ${{ steps.review.outputs.diary_count }}
+          RATE: ${{ steps.review.outputs.rate }}
+          TOTAL_ITEMS: ${{ steps.review.outputs.total_items }}
+          WEEK_START: ${{ steps.review.outputs.week_start }}
+          WEEK_END: ${{ steps.review.outputs.week_end }}
+          WEEK_NUM: ${{ steps.review.outputs.week_num }}
+        run: |
+          if [ "$RATE" -ge 80 ]; then
+            GRADE="S"
+            GRADE_COLOR="#FFD700"
+            COMMENT="まあまあやるじゃん"
+          elif [ "$RATE" -ge 60 ]; then
+            GRADE="A"
+            GRADE_COLOR="#58a6ff"
+            COMMENT="悪くはない。でも満点じゃないよね"
+          elif [ "$RATE" -ge 40 ]; then
+            GRADE="B"
+            GRADE_COLOR="#FF8C00"
+            COMMENT="半分もサボってるけど大丈夫？"
+          else
+            GRADE="F"
+            GRADE_COLOR="#FF0000"
+            COMMENT="やる気ある？ないなら消していい？"
+          fi
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg to "$LINE_USER_ID" \
+            --arg alt_text "週次レビュー W${WEEK_NUM}: ${DIARY_COUNT}/7日" \
+            --arg week_info "W${WEEK_NUM} | ${WEEK_START} 〜 ${WEEK_END}" \
+            --arg grade "$GRADE" \
+            --arg grade_color "$GRADE_COLOR" \
+            --arg diary_count "${DIARY_COUNT}/7日" \
+            --arg rate "${RATE}%" \
+            --arg total_items "${TOTAL_ITEMS}件" \
+            --arg comment "$COMMENT" \
+            '{
+              "to": $to,
+              "messages": [
+                {
+                  "type": "flex",
+                  "altText": $alt_text,
+                  "contents": {
+                    "type": "bubble",
+                    "size": "kilo",
+                    "header": {
+                      "type": "box",
+                      "layout": "horizontal",
+                      "contents": [
+                        {"type": "text", "text": "📊 Weekly Review", "weight": "bold", "size": "lg", "color": "#FFFFFF", "flex": 3},
+                        {"type": "text", "text": $grade, "weight": "bold", "size": "xxl", "color": $grade_color, "align": "end", "flex": 1}
+                      ],
+                      "backgroundColor": "#1a1a2e",
+                      "paddingAll": "15px"
+                    },
+                    "body": {
+                      "type": "box",
+                      "layout": "vertical",
+                      "contents": [
+                        {"type": "text", "text": $week_info, "size": "xs", "color": "#999999"},
+                        {"type": "separator", "margin": "md"},
+                        {
+                          "type": "box",
+                          "layout": "horizontal",
+                          "contents": [
+                            {
+                              "type": "box",
+                              "layout": "vertical",
+                              "contents": [
+                                {"type": "text", "text": "記録日数", "size": "xs", "color": "#999999", "align": "center"},
+                                {"type": "text", "text": $diary_count, "size": "lg", "weight": "bold", "align": "center"}
+                              ],
+                              "flex": 1
+                            },
+                            {"type": "separator"},
+                            {
+                              "type": "box",
+                              "layout": "vertical",
+                              "contents": [
+                                {"type": "text", "text": "達成率", "size": "xs", "color": "#999999", "align": "center"},
+                                {"type": "text", "text": $rate, "size": "lg", "weight": "bold", "align": "center"}
+                              ],
+                              "flex": 1
+                            },
+                            {"type": "separator"},
+                            {
+                              "type": "box",
+                              "layout": "vertical",
+                              "contents": [
+                                {"type": "text", "text": "アイテム", "size": "xs", "color": "#999999", "align": "center"},
+                                {"type": "text", "text": $total_items, "size": "lg", "weight": "bold", "align": "center"}
+                              ],
+                              "flex": 1
+                            }
+                          ],
+                          "margin": "lg"
+                        },
+                        {"type": "separator", "margin": "lg"},
+                        {"type": "text", "text": $comment, "size": "sm", "color": $grade_color, "weight": "bold", "margin": "lg", "wrap": true}
+                      ],
+                      "paddingAll": "15px"
+                    }
+                  }
+                }
+              ]
+            }')
+
+          curl -s -X POST "https://api.line.me/v2/bot/message/push" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${LINE_CHANNEL_ACCESS_TOKEN}" \
+            -d "$JSON_PAYLOAD"

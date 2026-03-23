@@ -1,0 +1,92 @@
+name: "Validate Diary Entry"
+description: "日記ファイルのフォーマットをバリデーションする"
+
+inputs:
+  file:
+    description: "バリデーション対象のファイルパス"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate diary format
+      shell: bash
+      run: |
+        FILE="${{ inputs.file }}"
+        ERRORS=()
+
+        if [ ! -f "$FILE" ]; then
+          echo "::error::ファイルが見つかりません: $FILE"
+          exit 1
+        fi
+
+        CONTENT=$(cat "$FILE")
+        FILENAME=$(basename "$FILE" .md)
+
+        # 1. 日付ヘッダーの存在チェック
+        HEADER=$(head -1 "$FILE")
+        if ! echo "$HEADER" | grep -qE '^# [0-9]{4}-[0-9]{2}-[0-9]{2}（.）$'; then
+          ERRORS+=("日付ヘッダーが不正です。期待: '# YYYY-MM-DD（曜）' 実際: '$HEADER'")
+        fi
+
+        # 2. 日付ヘッダーとファイル名の一致チェック
+        HEADER_DATE=$(echo "$HEADER" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' || echo "")
+        EXPECTED_DATE_PART=$(echo "$HEADER_DATE" | grep -oE '[0-9]{2}$' || echo "")
+        if [ -n "$EXPECTED_DATE_PART" ] && [ "$EXPECTED_DATE_PART" != "$FILENAME" ]; then
+          ERRORS+=("ファイル名($FILENAME.md)と日付ヘッダー($HEADER_DATE)の日付が一致しません")
+        fi
+
+        # 3. カテゴリが最低1つあるか
+        CATEGORY_COUNT=$(grep -cE '^## .+' "$FILE" | head -1)
+        # 振り返りセクションを除外してカウント
+        CONTENT_CATEGORIES=$(grep -E '^## ' "$FILE" | grep -v '振り返り' | wc -l)
+        if [ "$CONTENT_CATEGORIES" -lt 1 ]; then
+          ERRORS+=("カテゴリが1つもありません。最低1つのカテゴリ（例: ## 💼 仕事）が必要です")
+        fi
+
+        # 4. 振り返りセクションの存在チェック
+        if ! grep -qE '^## .* 振り返り' "$FILE"; then
+          ERRORS+=("振り返りセクションがありません。'## 💭 振り返り' を追加してください")
+        fi
+
+        # 5. タグセクションの存在チェック
+        if ! grep -q '^tags:' "$FILE"; then
+          ERRORS+=("タグ行がありません。ファイル末尾に 'tags: #タグ1 #タグ2' を追加してください")
+        fi
+
+        # 6. 空カテゴリのチェック（見出し直後に空行2つ = 中身なし）
+        PREV_LINE=""
+        PREV_PREV_LINE=""
+        EMPTY_CATEGORIES=()
+        while IFS= read -r line; do
+          if echo "$line" | grep -qE '^## ' && echo "$PREV_LINE" | grep -qE '^\s*$' && echo "$PREV_PREV_LINE" | grep -qE '^## '; then
+            EMPTY_CATEGORIES+=("$PREV_PREV_LINE")
+          fi
+          PREV_PREV_LINE="$PREV_LINE"
+          PREV_LINE="$line"
+        done < "$FILE"
+
+        for cat in "${EMPTY_CATEGORIES[@]}"; do
+          ERRORS+=("空のカテゴリがあります: $cat")
+        done
+
+        # 7. タグのフォーマットチェック
+        TAG_LINE=$(grep '^tags:' "$FILE" || echo "")
+        if [ -n "$TAG_LINE" ]; then
+          # tags: の後に #付きタグがあるか
+          TAG_COUNT=$(echo "$TAG_LINE" | grep -oE '#[^ ]+' | wc -l)
+          if [ "$TAG_COUNT" -lt 1 ]; then
+            ERRORS+=("タグが1つもありません。'tags: #タグ名' 形式で記載してください")
+          fi
+        fi
+
+        # 結果出力
+        if [ ${#ERRORS[@]} -gt 0 ]; then
+          echo "::error::❌ バリデーションエラー ($FILE)"
+          for err in "${ERRORS[@]}"; do
+            echo "::error::  - $err"
+          done
+          exit 1
+        else
+          echo "✅ バリデーション通過: $FILE"
+        fi

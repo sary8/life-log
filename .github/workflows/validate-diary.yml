@@ -1,0 +1,51 @@
+name: Validate Diary
+
+on:
+  push:
+    paths:
+      - "daily/**/*.md"
+  pull_request:
+    paths:
+      - "daily/**/*.md"
+
+jobs:
+  detect-files:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.changed.outputs.matrix }}
+      has_files: ${{ steps.changed.outputs.has_files }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Get changed diary files
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            FILES=$(git diff --name-only HEAD~1 HEAD -- 'daily/**/*.md' 2>/dev/null || echo "")
+          else
+            FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }} -- 'daily/**/*.md' 2>/dev/null || echo "")
+          fi
+          JSON=$(echo "$FILES" | grep -v '^$' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix=${JSON}" >> "$GITHUB_OUTPUT"
+          if [ "$JSON" = "[]" ]; then
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate:
+    needs: detect-files
+    if: needs.detect-files.outputs.has_files == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        file: ${{ fromJson(needs.detect-files.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate diary format
+        uses: ./.github/actions/validate-diary
+        with:
+          file: ${{ matrix.file }}
