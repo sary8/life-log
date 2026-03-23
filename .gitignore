@@ -14,7 +14,8 @@ Desktop.ini
 .env*
 
 # Claude Code
-.claude/
+.claude/*
+!.claude/skills/
 
 # Generated files
 _site/

@@ -69,12 +69,7 @@ tags: #ジム #仕事 #友人
 
 ## セットアップ
 
-### スキルの登録
-
-```bash
-mkdir -p ~/.claude/skills/life-log
-cp skill.md ~/.claude/skills/life-log/skill.md
-```
+このリポジトリをフォークしてClaude Codeで開けば、スキルがそのまま使える（`.claude/skills/life-log/skill.md` に配置済み）。
 
 ### LINE通知（任意）
 
@@ -96,7 +91,7 @@ cp skill.md ~/.claude/skills/life-log/skill.md
 
 ## カスタマイズ
 
-- **`skill.md`** — 日記のカテゴリ、フォーマット、振り返りのトーン
+- **`.claude/skills/life-log/skill.md`** — 日記のカテゴリ、フォーマット、振り返りのトーン
 - **`CLAUDE.md`** — コミットルール、目標管理のフォーマット
 - **`.markdownlint.jsonc`** — lintルール
 
