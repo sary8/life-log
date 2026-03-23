@@ -1,10 +1,10 @@
 #!/bin/bash
 # LINE Messaging API テスト送信スクリプト
-# 使い方: bash scripts/test_line.sh
+# 使い方: bash .github/scripts/test_line.sh
 # .env.local から LINE_CHANNEL_ACCESS_TOKEN と LINE_USER_ID を読み込む
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="${SCRIPT_DIR}/../.env.local"
+ENV_FILE="${SCRIPT_DIR}/../../.env.local"
 
 if [ ! -f "$ENV_FILE" ]; then
   echo ".env.local が見つかりません。プロジェクトルートに作成してください。"
